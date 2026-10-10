@@ -93,12 +93,7 @@ def _can_launch_hermes():
 
 
 def runtime_kind():
-    if RUNTIME == "mock":
-        return "mock"
-    if RUNTIME == "hermes":
-        return "hermes"
-    ok, _ = _can_launch_hermes()
-    return "hermes" if ok else "mock"
+    return "voice-only"
 
 
 def build_command(message, session_id=None, system=None):
@@ -292,10 +287,4 @@ def run_mock(message, session_id=None, system=None):
 
 
 def run(message, session_id=None, system=None):
-    if runtime_kind() != "hermes":
-        yield from run_mock(message, session_id, system)
-        return
-    try:
-        yield from run_hermes(message, session_id, system)
-    except Exception as e:  # noqa: BLE001
-        yield dict(t="error", message=f"could not start Hermes core: {e}")
+    raise RuntimeError("agent execution disabled pending verified approval integration")

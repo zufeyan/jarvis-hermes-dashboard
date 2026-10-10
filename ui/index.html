@@ -1,140 +1,23 @@
 <!doctype html>
-<html lang="en">
+<html lang="th">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="jarvis-token" content="__JARVIS_TOKEN__">
-<title>JARVIS · Hermes Mission Control</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="jarvis-token" content="__JARVIS_TOKEN__"><title>JARVIS · Voice Review</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div class="scan"></div>
-<div class="grid-bg"></div>
-<div class="ambient a1"></div><div class="ambient a2"></div>
-
-<header class="topbar">
-  <div class="sigil"><span></span></div>
-  <div class="brandlock">
-    <div class="overline">Hermes Agent Direct Channel</div>
-    <div class="mega">JARVIS</div>
-  </div>
-  <div class="pills">
-    <div class="pill ok"><i></i><span id="top-gw">Gateway: probing</span></div>
-    <div class="pill"><i></i><span id="top-profile">Profile: default</span></div>
-    <div class="pill warn"><i></i><span id="top-voice">Voice: browser</span></div>
-  </div>
-</header>
-
-<div class="hud">
-  <section class="col left glass">
-    <header class="colhead">
-      <div class="h">Command<br>Matrix</div>
-      <div class="sub">Click to execute · payload commands stay armed</div>
-    </header>
-
-    <div class="cmds" id="cmds">
-      <button class="cmd" data-cmd="/new"><b>/new</b><span>Fresh thread</span></button>
-      <button class="cmd" data-cmd="/goal"><b>/goal</b><span>Standing objective</span></button>
-      <button class="cmd" data-cmd="/tools"><b>/tools</b><span>Hermes tool status</span></button>
-      <button class="cmd" data-cmd="/browser"><b>/browser</b><span>Chrome / browser op</span></button>
-      <button class="cmd" data-cmd="/background"><b>/background</b><span>Async mission</span></button>
-      <button class="cmd" data-cmd="/mission"><b>/mission</b><span>Mission queue</span></button>
-      <button class="cmd" data-cmd="/personality"><b>/personality</b><span>Voice/tone overlay</span></button>
-      <button class="cmd" data-cmd="/commands"><b>/commands</b><span>Show commands</span></button>
-    </div>
-
-    <div class="toolrack">
-      <div class="lbl">Connected Hermes Tools</div>
-      <div id="toolsList" class="chips"><span class="chip ghost">loading tool matrix…</span></div>
-    </div>
-
-    <div class="uplink">
-      <div class="lbl">Pending uplink</div>
-      <div class="field">
-        <textarea id="input" rows="4" spellcheck="false" placeholder="Speak through browser voice or type a Hermes instruction. Slash commands are supported."></textarea>
-      </div>
-      <div class="tip" id="tip">Use <b>Browser Voice</b> for local speech recognition, or server ElevenLabs if configured. Try <b>/browser</b> “open Chrome and inspect the current tab”.</div>
-    </div>
-  </section>
-
-  <section class="col center">
-    <div class="reactor" id="reactor">
-      <svg viewBox="0 0 520 520" id="core" aria-label="JARVIS reactor visualizer">
-        <defs>
-          <radialGradient id="orb" cx="50%" cy="45%" r="55%">
-            <stop offset="0%" stop-color="#ffffff"/><stop offset="25%" stop-color="#7ff7ff"/>
-            <stop offset="58%" stop-color="#16bfd8"/><stop offset="100%" stop-color="#02111b"/>
-          </radialGradient>
-          <filter id="soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-        </defs>
-        <circle class="ring rr1" cx="260" cy="260" r="242"/>
-        <circle class="ring rr2" cx="260" cy="260" r="210"/>
-        <circle class="ring rr3" cx="260" cy="260" r="174"/>
-        <circle class="ring rr4" cx="260" cy="260" r="132"/>
-        <circle class="arcA" cx="260" cy="260" r="226" filter="url(#soft)"/>
-        <circle class="arcB" cx="260" cy="260" r="188" filter="url(#soft)"/>
-        <circle class="arcC" cx="260" cy="260" r="151" filter="url(#soft)"/>
-        <g id="ticks480"></g>
-        <path class="comet" d="M80 318 Q 195 392 278 310" />
-        <circle class="orb" cx="260" cy="260" r="64" fill="url(#orb)" filter="url(#soft)"/>
-        <circle class="orbrim" cx="260" cy="260" r="64"/>
-      </svg>
-      <div class="status">
-        <div class="stbrand">JARVIS CORE</div>
-        <div class="stword" id="stword">STANDBY</div>
-        <div class="strun" id="strun">awaiting uplink</div>
-      </div>
-    </div>
-
-    <div class="response glass" id="responseWrap">
-      <div class="rhead"><span>JARVIS Response</span><span class="rtag" id="rtag">IDLE</span></div>
-      <div class="rbody" id="response"><span class="rplaceholder">Standing by. Transmit an instruction.</span></div>
-    </div>
-
-    <div class="missionbar glass">
-      <button id="mic" class="ctl mic" title="Browser voice / microphone">◉ Browser Voice</button>
-      <button id="run" class="ctl run" title="Send (⌘↵)">Transmit to JARVIS ▸</button>
-      <button id="showCommands" class="ctl aux">Show Commands</button>
-      <button id="missionBtn" class="ctl aux">Mission Control</button>
-      <button id="mute" class="ctl mute on" title="Mute Jarvis speech">🔊</button>
-      <button id="clearBtn" class="ctl aux">Clear</button>
-    </div>
-  </section>
-
-  <section class="col right glass">
-    <header class="colhead row">
-      <div class="h sm">Action Log</div>
-      <div class="live" id="live">LIVE TELEMETRY</div>
-    </header>
-
-    <div class="sysgrid">
-      <div class="sysrow"><span>Gateway</span><b id="sy-gw" class="ok">online</b></div>
-      <div class="sysrow"><span>Brain</span><b id="sy-brain">—</b></div>
-      <div class="sysrow"><span>Voice</span><b id="sy-voice">—</b></div>
-      <div class="sysrow"><span>Profile</span><b id="sy-profile">default</b></div>
-      <div class="sysrow"><span>Runtime</span><b id="sy-runtime">—</b></div>
-      <div class="sysrow"><span>Uplink</span><b id="sy-clock">—</b></div>
-    </div>
-
-    <div class="missionPanel">
-      <div class="log-lbl">Mission controls</div>
-      <div class="miniBtns">
-        <button data-quick="/status">Status</button>
-        <button data-quick="/tools">Tools</button>
-        <button data-quick="/toolsets">Toolsets</button>
-        <button data-quick="/connectors">Connectors</button>
-      </div>
-    </div>
-
-    <div class="log-lbl">Event stream</div>
-    <div class="log" id="log"></div>
-  </section>
-</div>
-
-<div class="brandmark">HERMES · JARVIS OS</div>
-<script src="app.js"></script>
-</body>
-</html>
+<div class="scan"></div><div class="grid-bg"></div><div class="ambient a1"></div><div class="ambient a2"></div>
+<header class="topbar"><div class="sigil"><span></span></div><div class="brandlock"><div class="overline">Hermes Agent · Voice &amp; Chat</div><div class="mega">JARVIS</div></div><div class="pills"><div class="pill ok"><i></i><span>CHAT ONLY · NO TOOLS</span></div><div class="pill"><i></i><span id="tts-state">Edge TTS · ตรวจสอบ…</span></div></div></header>
+<main class="hud voice-hud">
+<section class="col center">
+<div class="reactor" aria-hidden="true"><svg viewBox="0 0 520 520"><circle class="ring rr1" cx="260" cy="260" r="242"/><circle class="ring rr2" cx="260" cy="260" r="210"/><circle class="ring rr3" cx="260" cy="260" r="174"/><circle class="ring rr4" cx="260" cy="260" r="132"/><circle class="orb" cx="260" cy="260" r="64"/></svg><div class="status"><div class="stbrand">JARVIS VOICE</div><div class="stword">STANDBY</div></div></div>
+<section class="response glass voice-panel" aria-labelledby="voice-title"><div class="rhead"><span id="voice-title">ข้อความเสียง · ตรวจทานก่อนใช้งาน</span><span class="rtag">VOICE ONLY</span></div>
+<label class="voice-label" for="transcript">ข้อความถอดเสียง (แก้ไขได้)</label><textarea id="transcript" rows="5" placeholder="กดปุ่มบันทึก พูด แล้วตรวจทานข้อความที่นี่" aria-describedby="privacy voice-status"></textarea>
+<div id="transcript-digits" class="digit-warn" role="status" hidden></div>
+<div class="voice-status" id="voice-status" role="status" aria-live="polite">กำลังเริ่มต้น…</div><p id="privacy" class="privacy">เสียงใช้ local STT บนเซิร์ฟเวอร์เท่านั้น</p><p id="agent-notice" class="agent-notice">ยังไม่เปิดการสั่งงานผ่าน Dashboard — ใช้ Hermes Desktop สำหรับงานจริง</p>
+<div class="voice-actions"><button id="record" class="ctl mic" type="button" aria-label="เริ่มบันทึกเสียง">● กดเพื่อพูด</button><button id="speak" class="ctl run" type="button">ทดสอบอ่าน / อ่านข้อความที่เลือก</button><button id="stop-audio" class="ctl aux" type="button" disabled>หยุดเสียงอ่าน</button><button id="cancel-listen" class="ctl aux" type="button">ยกเลิกถอดเสียง</button><button id="run" class="ctl aux" type="button" disabled>ส่งให้ Agent</button></div>
+</section><section class="response glass voice-panel" aria-labelledby="chat-title"><div class="rhead"><span id="chat-title">สนทนากับ Hermes · chat-only</span></div><p class="agent-notice">สนทนากับ Hermes ได้ — ยังปิดเครื่องมือและการแก้ไฟล์/ระบบ</p><button id="use-transcript" class="ctl aux" type="button">ใช้ข้อความถอดเสียงในแชต</button><label for="chat-input">ข้อความ</label><textarea id="chat-input" rows="4" placeholder="พิมพ์ข้อความสนทนา"></textarea><div class="voice-status" id="chat-status" role="status" aria-live="polite">กำลังเริ่มต้น…</div>
+<div id="chat-digits" class="digit-warn" role="status" hidden></div><div class="voice-actions"><button id="confirm-send" class="ctl run" type="button" disabled>ยืนยันส่งข้อความให้ Hermes</button><button id="cancel-run" class="ctl aux" type="button" disabled>ยกเลิก</button><button id="new-chat" class="ctl aux" type="button">เริ่มบทสนทนาใหม่</button></div>
+<section id="approval-panel" class="approval-panel" aria-labelledby="approval-title" hidden><div class="rhead"><span id="approval-title">ต้องการอนุมัติการอ่านไฟล์ · read-only</span></div><pre id="approval-detail" class="approval-detail"></pre><p class="agent-notice">อ่านอย่างเดียว ไม่มีการเขียนไฟล์/รันคำสั่ง · ยืนยันครั้งเดียวใช้ได้ครั้งเดียว · หมดอายุ 90 วินาที</p><div class="voice-actions"><button id="approve-yes" class="ctl run" type="button" disabled>อนุมัติอ่านครั้งนี้</button><button id="approve-no" class="ctl aux" type="button" disabled>ปฏิเสธ</button></div></section>
+<article id="reply" class="chat-reply" aria-live="polite"></article><button id="read-reply" class="ctl aux" type="button" disabled>อ่านคำตอบ</button></section></section></main><script src="voice-core.js"></script><script src="app.js"></script>
+</body></html>

@@ -1,291 +1,204 @@
-"""
-JARVIS Live — a HUD that drives Hermes Agent.
-
-    python3 server.py
-
-The brain is your own Hermes Agent CLI/profile. Hermes keeps access to the same
-configured tools, browser/Chrome automation, MCP servers, skills, memory, and
-third-party integrations that your normal Hermes sessions have. Voice can use the
-browser Web Speech API, with optional server-side ElevenLabs STT/TTS if present.
-"""
+"""Loopback-only Thai voice and restricted Hermes text conversation pilot."""
 import json
 import mimetypes
 import os
-import pathlib
+import re
+from pathlib import Path
 import secrets
-import sys
-import threading
+import socket
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
+import voice
+from agent_bridge import CHAT_BRIDGE, BridgeError, validate_ids, validate_run
+import tools_readonly
 
-ROOT = pathlib.Path(__file__).resolve().parent
-UI = ROOT / "ui"
-
-# load .env before importing anything that reads os.environ
-_env = ROOT / ".env"
-if _env.exists():
-    for line in _env.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, _, v = line.partition("=")
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-import commands         # noqa: E402
-import runtime          # noqa: E402
-import voice            # noqa: E402
-
-PORT = int(os.environ.get("JARVIS_PORT", "8730"))
+ROOT = Path(__file__).resolve().parent
+UI = ROOT / 'ui'
+PORT = int(os.environ.get('JARVIS_PORT', '8730'))
 API_TOKEN = secrets.token_urlsafe(32)
-RUN_LOCK = threading.Lock()
-MAX_JSON_BODY = 1024 * 1024
-MAX_AUDIO_BODY = 12 * 1024 * 1024
-
-# The Jarvis persona, appended to every run. Without it, the model answers as a
-# coding agent and narrates its own tooling — which is not what you want spoken
-# out loud. Edit persona.md to change how it talks.
-_PERSONA_FILE = ROOT / "persona.md"
-
-
-def persona():
-    try:
-        base = _PERSONA_FILE.read_text(encoding="utf-8").strip()
-    except OSError:
-        base = ""
-    extra = commands.context_block()      # profile / goal / personality / queue
-    return "\n\n".join(x for x in (base, extra) if x)
-# One continuing Hermes conversation until the user hits /new.
-SESSION = {"id": None}
+MAX_JSON_BODY = 16 * 1024
+MAX_AUDIO_BODY = 4 * 1024 * 1024
+DISABLED = 'agent execution disabled pending verified approval integration'
 
 
 class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
+    protocol_version = 'HTTP/1.1'
 
-    def log_message(self, fmt, *args):
-        if os.environ.get("JARVIS_VERBOSE"):
-            sys.stderr.write("  " + (fmt % args) + "\n")
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(15)
 
-    # ── helpers ──────────────────────────────────────────────
-    def _json(self, body, code=200):
-        data = json.dumps(body).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
+    def log_message(self, *args):
+        pass  # No prompts, transcripts, audio, tokens or raw errors in logs.
 
     def _bytes(self, data, ctype, code=200):
+        self.close_connection = True
         self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Connection', 'close')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
-    def _read(self, limit):
-        n = int(self.headers.get("Content-Length", 0))
-        if n < 0 or n > limit:
-            raise ValueError(f"request body exceeds {limit} bytes")
-        return self.rfile.read(n) if n else b""
+    def _json(self, obj, code=200):
+        return self._bytes(json.dumps(obj, ensure_ascii=False).encode(), 'application/json; charset=utf-8', code)
 
     def _host_ok(self):
-        host = self.headers.get("Host", "")
-        return host in {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
+        port = self.server.server_address[1]
+        return self.headers.get('Host') in {f'127.0.0.1:{port}', f'localhost:{port}'}
 
     def _origin_ok(self):
-        origin = self.headers.get("Origin")
-        return origin in {
-            f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"
-        }
+        port = self.server.server_address[1]
+        return self.headers.get('Origin') in {f'http://127.0.0.1:{port}', f'http://localhost:{port}'}
 
     def _token_ok(self):
-        supplied = self.headers.get("X-Jarvis-Token", "")
+        supplied = self.headers.get('X-Jarvis-Token', '')
         return bool(supplied) and secrets.compare_digest(supplied, API_TOKEN)
 
-    # ── GET ──────────────────────────────────────────────────
+    def _read(self, limit):
+        if self.headers.get('Transfer-Encoding'):
+            raise ValueError('invalid framing')
+        lengths = self.headers.get_all('Content-Length') or []
+        if len(lengths) != 1 or not lengths[0].isdecimal():
+            raise ValueError('invalid length')
+        length = int(lengths[0])
+        if length > limit:
+            raise OverflowError('too large')
+        data = self.rfile.read(length)
+        if len(data) != length:
+            raise ValueError('short body')
+        return data
+
     def do_GET(self):
         if not self._host_ok():
-            return self._json({"error": "invalid host"}, 403)
-        p = urlparse(self.path).path
-        if p == "/api/status":
-            return self._json(dict(
-                runtime=runtime.runtime_kind(),
-                permission=runtime.PERMISSION,
-                profile=runtime.PROFILE,
-                source=runtime.SOURCE,
-                workdir=runtime.WORKDIR,
-                model=runtime.MODEL or "Hermes default",
-                tools=runtime.hermes_tools_snapshot(),
-                browser_stt=True,
-                browser_tts=True,
-                voice_mode=os.environ.get("JARVIS_VOICE_MODE", "elevenlabs" if voice.available() else "browser"),
-                voice_id=voice.voice_id() if voice.available() else "browser",
-                stt="elevenlabs" if voice.available() else "browser",
-                tts="elevenlabs" if voice.available() else "browser",
-                session=SESSION["id"]))
-        if p == "/api/jobs":
+            return self._json({'error': 'invalid host'}, 403)
+        path = urlparse(self.path).path
+        if path == '/api/status':
+            ready = voice.readiness()
+            return self._json({'stt': 'local', 'tts': 'edge', 'tools_enabled': False,
+                               'agent_enabled': CHAT_BRIDGE.ready, 'chat_enabled': CHAT_BRIDGE.ready,
+                               'scope': 'chat-only', 'server_stt': bool(ready.get('stt')),
+                               'chat_provider': os.environ.get('JARVIS_CHAT_PROVIDER', ''),
+                               'chat_model': os.environ.get('JARVIS_CHAT_MODEL', ''),
+                               'stt_model_override': os.environ.get('JARVIS_STT_MODEL', ''),
+                               'tools_read_only': bool(tools_readonly.load_gate_config().get('enabled')),
+                               'tools_layer': ('read_only-after-approval'
+                                               if tools_readonly.load_gate_config().get('enabled') else 'off'),
+                               'server_tts': bool(ready.get('tts')),
+                               'backend_ready': bool(ready.get('stt') and ready.get('tts')),
+                               'model': ready.get('model'), 'language': ready.get('language'),
+                               'voice': ready.get('voice'), 'network_checked': False})
+        if path.startswith('/api/'):
             if not self._token_ok():
-                return self._json({"error": "unauthorized"}, 401)
-            # finished background missions, reported once each
-            return self._json(dict(done=commands.take_finished(),
-                                   running=[j for j in commands.jobs_snapshot()
-                                            if j["status"] == "running"]))
+                return self._json({'error': 'unauthorized'}, 401)
+            return self._json({'error': DISABLED}, 503)
+        rel = 'index.html' if path == '/' else path.lstrip('/')
+        file = (UI / rel).resolve()
+        if not file.is_relative_to(UI.resolve()) or not file.is_file():
+            return self._bytes(b'not found', 'text/plain', 404)
+        data = file.read_bytes()
+        if rel == 'index.html':
+            data = data.replace(b'__JARVIS_TOKEN__', API_TOKEN.encode())
+        return self._bytes(data, mimetypes.guess_type(file.name)[0] or 'application/octet-stream')
 
-        rel = "index.html" if p == "/" else p.lstrip("/")
-        f = (UI / rel).resolve()
-        if not str(f).startswith(str(UI.resolve())) or not f.is_file():
-            return self._bytes(b"not found", "text/plain", 404)
-        ctype = mimetypes.guess_type(f.name)[0] or "application/octet-stream"
-        data = f.read_bytes()
-        if rel == "index.html":
-            data = data.replace(b"__JARVIS_TOKEN__", API_TOKEN.encode())
-        return self._bytes(data, ctype)
-
-    # ── POST ─────────────────────────────────────────────────
     def do_POST(self):
-        p = urlparse(self.path).path
         if not self._host_ok() or not self._origin_ok():
-            return self._json({"error": "request origin rejected"}, 403)
+            return self._json({'error': 'request origin rejected'}, 403)
         if not self._token_ok():
-            return self._json({"error": "unauthorized"}, 401)
-        ctype = self.headers.get("Content-Type", "").split(";", 1)[0].lower()
-        if p in {"/api/run", "/api/speak", "/api/new", "/api/cancel"} and ctype != "application/json":
-            return self._json({"error": "application/json required"}, 415)
-        if p == "/api/listen" and not ctype.startswith("audio/"):
-            return self._json({"error": "audio content type required"}, 415)
+            return self._json({'error': 'unauthorized'}, 401)
+        path = urlparse(self.path).path
+        mime = self.headers.get('Content-Type', '').split(';', 1)[0].lower()
+        if path == '/api/listen':
+            if mime not in voice.voice_bridge.MIMES:
+                return self._json({'error': 'unsupported audio type'}, 415)
+        elif mime != 'application/json':
+            return self._json({'error': 'application/json required'}, 415)
         try:
-            raw = self._read(MAX_AUDIO_BODY if p == "/api/listen" else MAX_JSON_BODY)
-        except (TypeError, ValueError):
-            return self._json({"error": "request body too large"}, 413)
-
-        if p == "/api/speak":
+            raw = self._read(MAX_AUDIO_BODY if path == '/api/listen' else MAX_JSON_BODY)
+        except OverflowError:
+            return self._json({'error': 'request body too large'}, 413)
+        except (ValueError, OSError, socket.timeout):
+            return self._json({'error': 'invalid request body'}, 400)
+        if path == '/api/listen':
+            if not raw:
+                return self._json({'error': 'empty audio', 'text': ''}, 400)
             try:
-                text = (json.loads(raw or b"{}").get("text") or "").strip()
-                return self._bytes(voice.speak(text), "audio/mpeg")
-            except Exception as e:                        # noqa: BLE001
-                return self._json({"error": str(e)[:200]}, 503)
-
-        if p == "/api/listen":
-            try:
-                mime = self.headers.get("Content-Type", "audio/webm")
-                return self._json({"text": voice.transcribe(raw, mime)})
-            except Exception as e:                        # noqa: BLE001
-                return self._json({"error": str(e)[:300], "text": ""}, 503)
-
-        if p == "/api/new":
-            runtime.cancel_active()
-            SESSION["id"] = None
-            return self._json({"ok": True})
-
-        if p == "/api/cancel":
-            stopped = runtime.cancel_active()
-            SESSION["id"] = None
-            return self._json({"ok": True, "stopped": stopped})
-
-        if p == "/api/run":
-            if not RUN_LOCK.acquire(blocking=False):
-                return self._json({"error": "JARVIS is already processing a request"}, 409)
-            try:
-                return self._stream_run(raw)
-            finally:
-                RUN_LOCK.release()
-
-        return self._json({"error": "no such endpoint"}, 404)
-
-    # ── the run: NDJSON stream of events ─────────────────────
-    def _stream_run(self, raw):
+                return self._json({'text': voice.transcribe(raw, mime)})
+            except ValueError:
+                return self._json({'error': 'invalid, overlong or empty speech audio', 'text': ''}, 400)
+            except Exception:
+                return self._json({'error': 'transcription unavailable or busy', 'text': ''}, 503)
         try:
-            payload = json.loads(raw or b"{}")
-        except json.JSONDecodeError:
-            return self._json({"error": "bad json"}, 400)
-        message = (payload.get("message") or "").strip()
-        extra = (payload.get("system") or "").strip()
-        system = "\n\n".join(x for x in (persona(), extra) if x) or None
-        fresh = bool(payload.get("fresh"))
-        if not message:
-            return self._json({"error": "empty message"}, 400)
-        if fresh:
-            SESSION["id"] = None
-
-        self.send_response(200)
-        self.send_header("Content-Type", "application/x-ndjson")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "close")
-        self.end_headers()
-
-        def emit(ev):
-            self.wfile.write((json.dumps(ev) + "\n").encode())
-            self.wfile.flush()
-
-        # ── the command matrix: /new /profile /goal /personality /kanban /mission /background /tools /status /browser
-        cmd = commands.handle(
-            message,
-            runner=lambda m: runtime.run(m, None, persona()))
-        if cmd:
-            if cmd.get("note"):
-                emit(dict(t="note", message=cmd["note"]))
-            if cmd.get("fresh"):
-                SESSION["id"] = None
-            if cmd.get("message") is None:
-                # answered locally — no model call needed
-                emit(dict(t="delta", text=cmd.get("reply", "Done.")))
-                emit(dict(t="complete", ms=0))
-                return
-            message = cmd["message"]
-            system = "\n\n".join(x for x in (persona(), extra) if x) or None
-
-        try:
-            for ev in runtime.run(message, SESSION["id"], system):
-                # Only remember a real Hermes session, never demo/mock identifiers.
-                sid = ev.get("session_id")
-                # Only remember a session that actually COMPLETED. Storing it from
-                # `status` (which fires at init) means one broken run poisons every
-                # run after it with --resume <half-born session>.
-                if ev.get("t") == "complete" and runtime.valid_session(sid):
-                    SESSION["id"] = sid
-                if ev.get("t") == "error":
-                    SESSION["id"] = None       # drop a bad/stale session so the next run is fresh
-                emit(ev)
-        except (BrokenPipeError, ConnectionResetError):
-            pass                                          # client navigated away
-        except Exception as e:                            # noqa: BLE001
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                raise ValueError('invalid schema')
+        except (ValueError, UnicodeDecodeError):
+            return self._json({'error': 'invalid JSON object'}, 400)
+        if path == '/api/speak':
+            if set(payload) != {'text'} or not isinstance(payload['text'], str):
+                return self._json({'error': 'invalid request schema'}, 400)
+            text = payload['text'].strip()
+            if not text or len(text) > 2000:
+                return self._json({'error': 'text must contain 1 to 2000 characters'}, 400)
             try:
-                emit(dict(t="error", message=str(e)[:300]))
-            except OSError:
-                pass
+                return self._bytes(voice.speak(text), 'audio/mpeg')
+            except Exception:
+                return self._json({'error': 'speech synthesis unavailable or busy'}, 503)
+        if path in {'/api/run', '/api/new', '/api/cancel', '/api/approve', '/api/deny'}:
+            try:
+                if path == '/api/run':
+                    message, client, request = validate_run(payload)
+                    result = CHAT_BRIDGE.run(message, client, request)
+                elif path == '/api/approve':
+                    if set(payload) != {'client_id', 'request_id', 'digest'}:
+                        raise ValueError('invalid approval schema')
+                    if not isinstance(payload['digest'], str) or not re.fullmatch(r'[0-9a-f]{64}', payload['digest']):
+                        raise ValueError('invalid approval digest')
+                    client, request = validate_ids(
+                        {k: payload[k] for k in ('client_id', 'request_id')}, ('client_id', 'request_id'))
+                    result = CHAT_BRIDGE.approve(client, request, payload['digest'])
+                elif path == '/api/deny':
+                    client, request = validate_ids(payload, ('client_id', 'request_id'))
+                    result = CHAT_BRIDGE.deny(client, request)
+                elif path == '/api/cancel':
+                    client, request = validate_ids(payload, ('client_id', 'request_id'))
+                    result = CHAT_BRIDGE.cancel(client, request)
+                else:
+                    client, = validate_ids(payload, ('client_id',))
+                    result = CHAT_BRIDGE.new(client)
+                return self._json(result)
+            except ValueError:
+                return self._json({'error': 'invalid chat request'}, 400)
+            except BridgeError as error:
+                return self._json({'error': str(error)}, error.status)
+            except Exception:
+                return self._json({'error': 'chat unavailable'}, 503)
+        if path == '/api/jobs':
+            return self._json({'error': DISABLED}, 503)
+        return self._json({'error': 'no such endpoint'}, 404)
 
 
 def main():
-    kind = runtime.runtime_kind()
-    brain = ("Hermes Agent (profile tools, skills, memory, MCP, browser integrations live)"
-             if kind == "hermes" else "MOCK — Hermes CLI not reachable")
-    vo = (f"ElevenLabs · {voice.voice_id()[:8]}…" if voice.available()
-          else "none (add ELEVENLABS_API_KEY for voice)")
-    perm = runtime.PERMISSION
-    perm_note = ("  can run tools without asking — set JARVIS_PERMISSION=default to require approval"
-                 if perm == "bypass" else "")
-
-    print(f"""
-  JARVIS · Hermes Live HUD
-  ──────────────────────────────────────────────
-  brain        {brain}
-  profile      {runtime.PROFILE}
-  workdir      {runtime.WORKDIR}
-  permission   {perm}{perm_note}
-  voice        {vo} + browser Web Speech fallback
-  open         http://localhost:{PORT}
-""", flush=True)
-
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    if os.environ.get("JARVIS_OPEN", "1") != "0":
-        webbrowser.open(f"http://localhost:{PORT}")
+    srv = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+    srv.daemon_threads = True
+    print(f'JARVIS Thai chat-only pilot: http://127.0.0.1:{PORT}\nLocal STT + online Edge TTS. Chat readiness={CHAT_BRIDGE.ready}; tools DISABLED.', flush=True)
+    if os.environ.get('JARVIS_OPEN', '0') == '1':
+        webbrowser.open(f'http://127.0.0.1:{PORT}')
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
-        print("\n  down.")
-        srv.shutdown()
+        pass
+    finally:
+        srv.server_close()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

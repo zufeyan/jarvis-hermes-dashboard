@@ -1,0 +1,3 @@
+# Chat-only UI
+
+The dashboard enables chat only when `/api/status` explicitly returns `chat_enabled: true`, `agent_enabled: true`, `tools_enabled: false`, and `scope: "chat-only"`. Sending requires the explicit “ยืนยันส่งข้อความให้ Hermes” control. Each tab keeps a cryptographic client UUID in memory; each run has its own request UUID. Cancel aborts the browser fetch and requests backend cancellation for the same owner/run; it does not promise rollback. Starting a new chat cancels the active owned request and clears displayed output. Replies render via the existing safe Markdown renderer. Speech is opt-in through “อ่านคำตอบ”; content over 2,000 characters is not truncated and is not sent to TTS.
