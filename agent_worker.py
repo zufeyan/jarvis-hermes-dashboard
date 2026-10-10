@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tools_readonly  # noqa: E402
+import tools_layer_b  # noqa: E402
 
 APPROVAL_TTL = 90
 
@@ -78,16 +79,33 @@ def _route_override(cfg):
     return provider, model
 
 
-def assert_surface(agent, gate):
-    """Fail closed unless the tool surface is exactly what the gate promises."""
-    if not gate.get('enabled'):
+def active_surface():
+    """Read-only layer and opt-in layer B, each behind its own checked-in gate.
+    Nothing is attached unless a gate file enables it."""
+    ro = tools_readonly.load_gate_config()
+    lb = tools_layer_b.load_config()
+    schemas = []
+    if ro.get('enabled'):
+        schemas += [json.loads(json.dumps(s)) for s in tools_readonly.SCHEMAS]
+    if lb.get('enabled'):
+        schemas += [json.loads(json.dumps(s)) for s in tools_layer_b.SCHEMAS]
+    names = tuple(s.get('function', {}).get('name') for s in schemas)
+    scope = ('layered-after-approval' if lb.get('enabled') else
+             'read-only-after-approval' if ro.get('enabled') else 'chat-only')
+    return {'ro': ro, 'lb': lb, 'schemas': schemas, 'names': names, 'scope': scope}
+
+
+def assert_surface(agent, gate=None):
+    """Fail closed unless the tool surface is exactly what the gates promise."""
+    surface = active_surface()
+    if not surface['names']:
         if agent.tools != [] or agent.valid_tool_names != set():
             raise RuntimeError('final constructed tool surface is not empty')
         return
     names = sorted(t.get('function', {}).get('name') for t in agent.tools)
-    expected = sorted(tools_readonly.ALLOWED_NAMES)
-    if names != expected or agent.valid_tool_names != set(tools_readonly.ALLOWED_NAMES):
-        raise RuntimeError('tool surface drifted from the approved read-only allowlist')
+    expected = sorted(surface['names'])
+    if names != expected or agent.valid_tool_names != set(surface['names']):
+        raise RuntimeError('tool surface drifted from the approved allowlist')
 
 
 def construct_agent(gate=None):
@@ -141,10 +159,11 @@ def install_gates(agent, gate):
     agent._execute_tool_calls_concurrent = deny_tools
     agent._invoke_tool = deny_tools
     agent._dispatch_delegate_task = deny_tools
-    if gate.get('enabled'):
-        agent.tools = [json.loads(json.dumps(s)) for s in tools_readonly.SCHEMAS]
-        agent.valid_tool_names = set(tools_readonly.ALLOWED_NAMES)
-        agent._execute_tool_calls = make_capture_gate(set(tools_readonly.ALLOWED_NAMES))
+    surface = active_surface()
+    if surface['names']:
+        agent.tools = surface['schemas']
+        agent.valid_tool_names = set(surface['names'])
+        agent._execute_tool_calls = make_capture_gate(set(surface['names']))
     else:
         agent._execute_tool_calls = deny_tools
     assert_surface(agent, gate)
@@ -168,23 +187,26 @@ def proof(agent, gate=None):
         if messages:
             raise RuntimeError('capability gate failed')
         tested.append(name)
-    if gate.get('enabled'):
+    surface = active_surface()
+    if surface['names']:
         # An allowlisted forged call is CAPTURED, never executed.
+        first = surface['names'][0]
+        probe_args = ('{"path":"/etc/hosts"}' if first == 'read_text_file'
+                      else '{"path":"escape/../probe","content":"x"}')
         call = SimpleNamespace(id='capture-probe', type='function',
-                               function=SimpleNamespace(name=tools_readonly.ALLOWED_NAMES[0],
-                                                        arguments='{"path":"/etc/hosts"}'))
+                               function=SimpleNamespace(name=first, arguments=probe_args))
         try:
             agent._execute_tool_calls(SimpleNamespace(tool_calls=[call]), [], agent.session_id, 0)
         except ApprovalCapture as capture:
-            if capture.action != tools_readonly.ALLOWED_NAMES[0]:
+            if capture.action != first:
                 raise RuntimeError('capture gate returned the wrong action')
         else:
             raise RuntimeError('capture gate did not stop the turn')
         assert_surface(agent, gate)
-        return {'constructed': True, 'tools': list(tools_readonly.ALLOWED_NAMES),
+        return {'constructed': True, 'tools': list(surface['names']),
                 'valid_tool_names': sorted(agent.valid_tool_names),
                 'capability_denials': tested, 'execution': 'never_in_worker',
-                'scope': 'read-only-after-approval', 'mock_mode': False}
+                'scope': surface['scope'], 'mock_mode': False}
     assert_surface(agent, gate)
     return {'constructed': True, 'tools': [], 'valid_tool_names': [],
             'capability_denials': tested, 'scope': 'chat-only', 'mock_mode': False}
@@ -225,12 +247,19 @@ SYSTEM_TOOLS = ('คุณคือจาร์วิส ตอบภาษา�
                 'ที่ใช้ได้เฉพาะเมื่อผู้ใช้อนุมัติ และอยู่ในโฟลเดอร์ที่อนุญาตเท่านั้น ถ้าคำตอบต้องอิงไฟล์จริง '
                 'ให้เรียกเครื่องมือหนึ่งครั้งที่จำเป็นที่สุด แล้วรอผล ห้ามเรียก terminal เขียนไฟล์ หรือค้นเว็บ')
 
+SYSTEM_TOOLS_B = ('คุณคือจาร์วิส ตอบภาษาไทยอย่างกระชับ มีเครื่องมือสี่ตัว: read_text_file, search_text '
+                  '(อ่านในโฟลเดอร์ที่อนุญาต) และ write_text_file, run_command (ทำงานใน sandbox ชั้น B เท่านั้น) '
+                  'ทุกตัวใช้ได้เฉพาะเมื่อผู้ใช้อนุมัติรายครั้ง ห้ามแกล้งอ้างว่าอ่านหรือเขียนไฟล์โดยไม่ได้รับผลจริง '
+                  'ห้ามเรียกเครื่องมือที่ไม่อยู่ในรายการ')
+
 ACTION_PREFIX = ('\n\n[ผลการอนุมัติ read-only]\nคำสั่งที่ผู้ใช้อนุมัติ: {action} {args}\nผลลัพธ์:\n{output}\n[/ผลการอนุมัติ read-only]\n\n'
                  'ตอบโดยอิงผลลัพธ์ข้างต้นเท่านั้น ถ้าข้อมูลไม่พอให้บอกตรง ๆ ห้ามเดา และห้ามแกล้งอ้างว่าอ่านไฟล์อื่น')
 
 
 def run_turn(agent, message, history, gate):
-    system = SYSTEM_TOOLS if gate.get('enabled') else SYSTEM_CHAT
+    surface = active_surface()
+    system = (SYSTEM_TOOLS_B if surface['scope'] == 'layered-after-approval' else
+              SYSTEM_TOOLS if surface['scope'] == 'read-only-after-approval' else SYSTEM_CHAT)
     result = agent.run_conversation(message, conversation_history=history, system_message=system)
     assert_surface(agent, gate)
     return result
@@ -238,11 +267,26 @@ def run_turn(agent, message, history, gate):
 
 def build_approval(action, args):
     """Validate BEFORE showing anything to the user, then bind digest+expiry."""
-    cfg = tools_readonly.load_gate_config()
+    cfg = {}
     try:
-        plan = tools_readonly.validate(action, args, cfg)
+        if action in tools_readonly.ALLOWED_NAMES:
+            cfg = tools_readonly.load_gate_config()
+            plan = tools_readonly.validate(action, args, cfg)
+        elif action in tools_layer_b.NAMES:
+            cfg = tools_layer_b.load_config()
+            plan = tools_layer_b.validate(action, args, cfg)
+        else:
+            raise tools_readonly.ToolRefusal(403, 'เครื่องมือนี้ไม่อยู่ใน allowlist')
     except tools_readonly.ToolRefusal as refusal:
-        return {'error': f'คำขอเครื่องมือถูกปฏิเสธ: {refusal}', 'error_status': refusal.status}
+        # The guard working is NOT a failed conversation: report it as a
+        # refusal the UI can explain, and never create an approval request.
+        roots = []
+        if action in tools_readonly.ALLOWED_NAMES:
+            roots = [str(Path(r).name) or str(r) for r in cfg.get('roots', [])]
+        elif action in tools_layer_b.NAMES:
+            roots = [Path(cfg.get('sandbox_root') or '-').name] if cfg.get('enabled') else []
+        return {'refused': True, 'action': action, 'reason': str(refusal),
+                'status': refusal.status, 'allowed_roots': roots}
     clean_args = plan['args']
     request_id = uuid.uuid4().hex
     return {'needs_approval': True, 'approval': {

@@ -184,6 +184,47 @@ def make_bridge(worker):
     return bridge
 
 
+def test_guard_refusal_is_reported_as_refusal_not_failure(gate_cfg):
+    result = agent_worker.build_approval('read_text_file', {'path': '/etc/hosts'})
+    assert result['refused'] is True
+    assert result['action'] == 'read_text_file'
+    assert result['status'] == 403
+    assert 'โฟลเดอร์ที่อนุญาต' in result['reason']
+    assert result['allowed_roots']            # tells the UI what IS readable
+    assert 'needs_approval' not in result     # no approval was ever created
+
+
+def test_unknown_tool_is_refused_without_a_config_crash(gate_cfg):
+    result = agent_worker.build_approval('terminal', {'command': 'rm -rf /'})
+    assert result['refused'] is True
+    assert result['allowed_roots'] == [] or isinstance(result['allowed_roots'], list)
+
+
+class RefusingWorker:
+    """Phase A: the guard rejected the tool request, so nothing was created."""
+
+    def __call__(self, payload, on_process=None):
+        if payload['op'] == 'proof':
+            return safe_proof()
+        if payload['op'] == 'run':
+            return {'refused': True, 'action': 'read_text_file',
+                    'reason': 'path อยู่นอกโฟลเดอร์ที่อนุญาต', 'status': 403,
+                    'allowed_roots': ['allowed']}
+        raise AssertionError('unexpected op ' + payload['op'])
+
+
+def test_bridge_passes_a_refusal_through_without_pending_or_error(gate_cfg):
+    bridge = make_bridge(RefusingWorker())
+    cid, rid = uid(), uid()
+    result = bridge.run('อ่าน /etc/hosts ให้หน่อย', cid, rid)
+    assert result['refused'] is True
+    assert 'โฟลเดอร์ที่อนุญาต' in result['reason']
+    assert result['allowed_roots'] == ['allowed']
+    assert bridge.state.pending is None       # no approval to approve or deny
+    # The refusal does not poison the session: a fresh turn still works.
+    assert bridge.ready is True
+
+
 def test_approval_flow_executes_exactly_once_and_answers(gate_cfg):
     cfg, root, _ = gate_cfg
     worker = FixtureBridgeWorker(str(root / 'docs' / 'quickstart.md'))

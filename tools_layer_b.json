@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "sandbox_root": "",
+  "allow_commands": [],
+  "max_write_bytes": 100000,
+  "max_output_bytes": 20000,
+  "timeout_seconds": 20,
+  "audit_log": ""
+}

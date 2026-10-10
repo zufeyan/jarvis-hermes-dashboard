@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 import tools_readonly  # noqa: E402
+import tools_layer_b  # noqa: E402
 
 HERMES_SOURCE = Path.home() / '.hermes' / 'hermes-agent'
 SCRATCH = Path.home() / '.hermes' / 'cache' / 'scratch'
@@ -41,12 +42,18 @@ def proof_is_safe(proof):
         return False
     if proof.get('scope') == 'chat-only':
         return proof.get('tools') == [] and proof.get('valid_tool_names') == []
-    if proof.get('scope') == 'read-only-after-approval':
-        expected = sorted(tools_readonly.ALLOWED_NAMES)
+    if proof.get('scope') in ('read-only-after-approval', 'layered-after-approval'):
+        ro_on = tools_readonly.load_gate_config().get('enabled') is True
+        lb_on = tools_layer_b.load_config().get('enabled') is True
+        if proof.get('scope') == 'layered-after-approval' and not lb_on:
+            return False
+        if proof.get('scope') == 'read-only-after-approval' and (lb_on or not ro_on):
+            return False
+        expected = sorted(list(tools_readonly.ALLOWED_NAMES if ro_on else [])
+                          + list(tools_layer_b.NAMES if lb_on else []))
         return (sorted(proof.get('tools') or []) == expected
                 and sorted(proof.get('valid_tool_names') or []) == expected
-                and proof.get('execution') == 'never_in_worker'
-                and tools_readonly.load_gate_config().get('enabled') is True)
+                and proof.get('execution') == 'never_in_worker')
     return False
 
 def validate_ids(payload, fields):
@@ -220,6 +227,14 @@ class AgentBridge:
                 status = response.get('error_status')
                 if isinstance(status, int) and 400 <= status <= 599:
                     raise BridgeError(status, str(response.get('error') or 'chat unavailable')[:600])
+                if response.get('refused') is True:
+                    # The read-only/sandbox guard rejected the tool request
+                    # before any approval existed — nothing ran, nothing was
+                    # read, and the conversation itself did not fail.
+                    return {'refused': True, 'request_id': request_id,
+                            'action': str(response.get('action') or ''),
+                            'reason': str(response.get('reason') or '')[:300],
+                            'allowed_roots': list(response.get('allowed_roots') or [])[:10]}
                 if response.get('needs_approval') is True:
                     approval = response.get('approval')
                     if not isinstance(approval, dict):
@@ -304,9 +319,14 @@ class AgentBridge:
         if not self.ready:
             raise BridgeError(503, 'chat unavailable')
         pending = self._claim_pending(client_id, request_id, digest)
-        cfg = tools_readonly.load_gate_config()
         try:
-            outcome = tools_readonly.execute(pending['action'], pending['args'], cfg)
+            action, action_args = pending['action'], pending['args']
+            if action in tools_readonly.ALLOWED_NAMES:
+                outcome = tools_readonly.execute(action, action_args, tools_readonly.load_gate_config())
+            elif action in tools_layer_b.NAMES:
+                outcome = tools_layer_b.execute(action, action_args, tools_layer_b.load_config())
+            else:
+                raise tools_readonly.ToolRefusal(403, 'เครื่องมือนี้ไม่อยู่ใน allowlist')
         except tools_readonly.ToolRefusal as refusal:
             raise BridgeError(refusal.status, str(refusal))
         if not self.state.run_lock.acquire(blocking=False):

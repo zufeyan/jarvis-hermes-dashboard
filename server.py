@@ -10,13 +10,19 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 import voice
+import net_scope
 from agent_bridge import CHAT_BRIDGE, BridgeError, validate_ids, validate_run
 import tools_readonly
+import tools_layer_b
 
 ROOT = Path(__file__).resolve().parent
 UI = ROOT / 'ui'
 PORT = int(os.environ.get('JARVIS_PORT', '8730'))
 API_TOKEN = secrets.token_urlsafe(32)
+# Opt-in LAN scope (default: loopback only, exactly as strict as before).
+LAN_MODE = net_scope.lan_enabled()
+LAN_ALLOW = net_scope.parse_allowlist(os.environ.get('JARVIS_LAN_ALLOW', ''))
+LOCAL_IPS = net_scope.machine_ips() if LAN_MODE else frozenset()
 MAX_JSON_BODY = 16 * 1024
 MAX_AUDIO_BODY = 4 * 1024 * 1024
 DISABLED = 'agent execution disabled pending verified approval integration'
@@ -52,12 +58,21 @@ class Handler(BaseHTTPRequestHandler):
         return self._bytes(json.dumps(obj, ensure_ascii=False).encode(), 'application/json; charset=utf-8', code)
 
     def _host_ok(self):
+        # The bound port comes from the live socket, so tests (and any other
+        # port choice) keep the same strict allowlist as production.
         port = self.server.server_address[1]
-        return self.headers.get('Host') in {f'127.0.0.1:{port}', f'localhost:{port}'}
+        return self.headers.get('Host') in net_scope.allowed_hosts(port, LAN_MODE, LOCAL_IPS)
 
     def _origin_ok(self):
         port = self.server.server_address[1]
-        return self.headers.get('Origin') in {f'http://127.0.0.1:{port}', f'http://localhost:{port}'}
+        return self.headers.get('Origin') in net_scope.allowed_origins(port, LAN_MODE, LOCAL_IPS)
+
+    def _client_ok(self):
+        # Only meaningful in LAN mode; the loopback default has an empty
+        # allowlist and no remote client can reach the socket anyway.
+        if not LAN_MODE or not LAN_ALLOW:
+            return True
+        return net_scope.client_allowed(self.client_address[0], LAN_ALLOW)
 
     def _token_ok(self):
         supplied = self.headers.get('X-Jarvis-Token', '')
@@ -78,7 +93,7 @@ class Handler(BaseHTTPRequestHandler):
         return data
 
     def do_GET(self):
-        if not self._host_ok():
+        if not self._host_ok() or not self._client_ok():
             return self._json({'error': 'invalid host'}, 403)
         path = urlparse(self.path).path
         if path == '/api/status':
@@ -89,7 +104,10 @@ class Handler(BaseHTTPRequestHandler):
                                'chat_provider': os.environ.get('JARVIS_CHAT_PROVIDER', ''),
                                'chat_model': os.environ.get('JARVIS_CHAT_MODEL', ''),
                                'stt_model_override': os.environ.get('JARVIS_STT_MODEL', ''),
+                               'lan_exposed': LAN_MODE,
+                               'lan_allowlist_entries': len(LAN_ALLOW),
                                'tools_read_only': bool(tools_readonly.load_gate_config().get('enabled')),
+                               'tools_layer_b': bool(tools_layer_b.load_config().get('enabled')),
                                'tools_layer': ('read_only-after-approval'
                                                if tools_readonly.load_gate_config().get('enabled') else 'off'),
                                'server_tts': bool(ready.get('tts')),
@@ -110,7 +128,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._bytes(data, mimetypes.guess_type(file.name)[0] or 'application/octet-stream')
 
     def do_POST(self):
-        if not self._host_ok() or not self._origin_ok():
+        if not self._host_ok() or not self._origin_ok() or not self._client_ok():
             return self._json({'error': 'request origin rejected'}, 403)
         if not self._token_ok():
             return self._json({'error': 'unauthorized'}, 401)
@@ -187,9 +205,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    srv = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+    bind = '0.0.0.0' if LAN_MODE else '127.0.0.1'
+    srv = ThreadingHTTPServer((bind, PORT), Handler)
     srv.daemon_threads = True
     print(f'JARVIS Thai chat-only pilot: http://127.0.0.1:{PORT}\nLocal STT + online Edge TTS. Chat readiness={CHAT_BRIDGE.ready}; tools DISABLED.', flush=True)
+    if LAN_MODE:
+        scope = f'{len(LAN_ALLOW)} IP(s) in the allowlist' if LAN_ALLOW else 'WHOLE LAN (no allowlist)'
+        print(f'!! LAN MODE OPT-IN: reachable on every interface ({scope}). '
+              'Anyone who can reach this port can drive the pilot after reading the token from the page. '
+              'Use only on a trusted network; unset JARVIS_LAN to go back to loopback-only.', flush=True)
     if os.environ.get('JARVIS_OPEN', '0') == '1':
         webbrowser.open(f'http://127.0.0.1:{PORT}')
     try:

@@ -125,4 +125,21 @@ test('deny hides the panel and never calls approve',async()=>{
  assert.equal(calls.filter(c=>c.url==='/api/approve').length,0);
  assert.equal(els['approval-panel'].hidden,true);
  assert.match(els['chat-status'].textContent,/ปฏิเสธการอ่านไฟล์แล้ว/);
-});
+ });
+ test('guard refusal is explained as a refusal, not as a failed conversation',async()=>{
+  const{els}=mount(undefined,async(url)=>{
+   if(url==='/api/status')return{ok:true,json:async()=>({chat_enabled:true,tools_enabled:false,agent_enabled:true,scope:'chat-only'})};
+   if(url==='/api/run')return{ok:true,json:async()=>({refused:true,action:'read_text_file',reason:'path อยู่นอกโฟลเดอร์ที่อนุญาต',allowed_roots:['jarvis-hermes-dashboard','JARVIS_Thai_Voice'],request_id:'r1'})};
+   return{ok:true,json:async()=>({})};
+  });
+  await tick();
+  els['chat-input'].value='อ่าน /etc/hosts ให้หน่อย';
+  els['confirm-send'].listeners.click();
+  await tick(); await tick();
+  assert.match(els['chat-status'].textContent,/ปฏิเสธไว้ก่อน/);
+  assert.match(els['chat-status'].textContent,/ไม่มีการอ่านไฟล์ใด ๆ/);
+  assert.match(els['chat-status'].textContent,/อ่านได้เฉพาะโฟลเดอร์: jarvis-hermes-dashboard, JARVIS_Thai_Voice/);
+  assert.equal(els['chat-status'].dataset.kind,'done');
+  assert.doesNotMatch(els['chat-status'].textContent,/สนทนาไม่สำเร็จ/);
+  assert.equal(els['reply'].innerHTML,'');
+ });

@@ -57,14 +57,18 @@ worker หยุดและคืน                  → ผู้ใช้ก
 
 ## 4. ยังไม่ทำ
 - ไม่เปลี่ยน `approvals.mode` ของ Hermes (คง `smart`), ไม่ใช้ YOLO
-- ไม่แตะ routing/model, ไม่ commit/push, ไม่ restart Gateway
-- ไม่เปิด LAN/tunnel/autostart
+- ไม่แตะ routing/model, ไม่ restart Gateway
+- tunnel/การเปิดออกอินเทอร์เน็ต: ยังไม่ทำ — ส่วน LAN / autostart / wake word / ชั้น B มีเป็น **opt-in ที่ค่าเริ่มต้นปิด** แล้ว ดู `docs/POST_V1_OPTIN_TH.md`
 
-## 4b. ชั้น B (เขียนไฟล์/รันคำสั่ง) — **นอกขอบเขต v1**
-ยังปิดถาวร และจะไม่ถูกเปิดด้วยกลไกเดิมที่ใช้กับชั้น A เพราะ:
-- การอ่านไฟล์มีเพดานความเสี่ยงต่ำและย้อนกลับได้ ส่วนการเขียน/รันคำสั่งเปลี่ยน state จริงและอาจย้อนไม่ได้
-- ถ้าจะทำจริงต้องมีอย่างน้อย: sandbox (tmp root จำลอง + canary ที่ต้องไม่เปลี่ยน), audit log ที่บันทึก action+digest+ผล (ไม่บันทึก argument ลับ), per-action approval ที่ผูก path/คำสั่งเต็มรูปแบบ + expiry, และเกณฑ์ “fixture ไม่เปลี่ยนจนกว่าจะอนุมัติ” ที่มี test จริง
-- อนุมัติเสียง/คำว่า “ใช่” ทั่วไป **ไม่มีวัน** ใช้เป็นสิทธิ์ได้ — ต้องเป็นการกดปุ่มยืนยันบน UI ที่ผูกกับ action นั้น ๆ เท่านั้น
+## 4b. ชั้น B (เขียนไฟล์/รันคำสั่ง) — **ทำเสร็จแล้วเป็น opt-in (ค่าเริ่มต้นปิด)**
+ทุกข้อที่เคยเขียนไว้ในแผนข้างต้นถูกทำครบใน `tools_layer_b.py` + `agent_worker.py` + `agent_bridge.py`:
+- **sandbox**: เขียนได้เฉพาะ path สัมพัทธ์ที่ resolve อยู่ใน `sandbox_root` เท่านั้น — `..`, path เต็ม และ symlink ที่ชี้ออกนอก sandbox ถูกปฏิเสธ (มี test symlink หลอกจริง)
+- **audit log อยู่ข้างใน sandbox**: บันทึก action, argv/path, exit code, bytes, sha256 — **ไม่บันทึกเนื้อหาไฟล์** และถ้า audit log เขียนไม่ได้ = ไม่ทำอะไรเลย (fail-closed)
+- **per-action approval เต็มรูปแบบ**: เครื่องมือชั้น B เรียกใช้ไม่ได้โดยตรง — ทุกครั้งกลายเป็น approval request ที่ digest ผูก action+args+request, หมดอายุ 90 วิ, ใช้ครั้งเดียว, ผูก owner เหมือนชั้น A ทุกประการ
+- **argv ไม่ผ่าน shell**: `shell=False`, allowlist แบบชื่อ/path เต็ม, cwd ผูก sandbox, timeout, ตัด output, ตัด env ที่ชื่อเหมือน secret
+- **เกณฑ์ fixture ไม่เปลี่ยนจนกว่าจะอนุมัติ** มี test จริง: path escape/symlink/oversize/allowlist/argv/timeout/audit-unwritable/digest-ปลอม/one-shot ทั้งหมดใน `tests/test_layer_b.py` (19 กรณี) ชุดเต็ม **86 passed**
+- ยังคงข้อเดิม: อนุมัติเสียง/คำว่า “ใช่” ทั่วไป **ไม่มีวัน** ใช้เป็นสิทธิ์ได้
+- เปิด/ปิด: `tools_layer_b.json` (`enabled` + `sandbox_root` + `allow_commands`) — ยังไม่ได้เปิดในสภาพแวดล้อมจริง และยังไม่ได้รัน LLM จริงกับชั้น B (tests ใช้ fixture bridge ที่เดินโค้ด approve/execute จริงทั้งเส้นทาง)
 
 ## 5. การย้อนกลับ
 ลบ `docs` ที่เกี่ยวข้อง + ปิด endpoint ใหม่ + คืน `agent_worker.py` เป็น gates เดิม (git ไม่มี commit จึงกู้จากไฟล์สำรอง/ไฟล์ปัจจุบัน) — เกณฑ์: ถ้ามีข้อสงสัยใด ๆ เรื่อง integrity ให้เลือกปิดมากกว่าเปิด

@@ -33,9 +33,19 @@ python3 start-thai.py --no-browser
 - เสียงตอบ/การยกเลิก: ปุ่มหยุดเล่นได้ทันที แต่งานฝั่งเซิร์ฟเวอร์/ค่า usage ของ provider อาจยังเดินต่อจนจบ
 - นี่ยัง **ไม่ใช่** ระบบสั่งงานเต็มรูปแบบ — การสั่งจริงใช้ Hermes Desktop
 
+## ฟีเจอร์เสริม (opt-in — ทุกอันปิดเป็นค่าเริ่มต้น)
+รายละเอียดและหลักฐานจริงทั้งหมดอยู่ที่ `docs/POST_V1_OPTIN_TH.md`
+| ต้องการ | คำสั่ง |
+|---|---|
+| เข้าจากมือถือ/เครื่องอื่นในบ้าน | `python3 start-thai.py --no-browser --lan --lan-allow "192.168.x.x"` |
+| เปิดเองเมื่อเข้าสู่ระบบ | `python3 autostart.py install` (`uninstall` เพื่อลบ) |
+| ให้จาร์วิสเขียนไฟล์/รันคำสั่งใน sandbox | ตั้ง `tools_layer_b.json` → `enabled: true` + `sandbox_root` (ยังคงต้องกดอนุมัติทุกครั้ง) |
+| เรียกด้วยเสียง “จาร์วิส …” | `python3 wakeword.py` (ต้องมี server รันอยู่ก่อน, Ctrl-C หยุด) |
+
 ## แก้ปัญหาที่พบบ่อย
 | อาการ | สาเหตุ | ทำอย่างไร |
 |---|---|---|
+| ขึ้น “จาร์วิสพยายามใช้เครื่องมือนอกขอบเขต ระบบจึงปฏิเสธไว้ก่อน” | คำขออ่านไฟล์อยู่นอก allowlist — **ไม่ใช่ข้อผิดพลาด** และไม่มีไฟล์ถูกอ่าน | ถามเรื่องที่อยู่ในโฟลเดอร์ที่อนุญาต (ข้อความจะบอกชื่อโฟลเดอร์ให้) หรือให้ Jarvis เพิ่มโฟลเดอร์ใน `tools_gate.json` → `roots` แล้วรีสตาร์ต |
 | `สนทนาไม่สำเร็จ: โหมดโมเดลติดโควตา (HTTP 429)` | `openai-codex` default ติด usage limit (ถึง ~13 ต.ค. 10:57) | ไม่ต้องทำอะไร ระบบใช้ `chat_route.json` → `xiaomi/mimo-v2.6-flash` อยู่แล้ว; ถ้าลบไฟล์นั้นจะกลับไปติด 429 |
 | ปุ่มอ่านขึ้น “เบราว์เซอร์บล็อกการเล่น…” | autoplay policy | กด **อ่านคำตอบ** อีกครั้ง — จะเล่นเสียงเดิมทันทีไม่ต้องสร้างใหม่ |
 | ปุ่มส่ง/อ่านเป็นสีเทา | ยังไม่มีคำตอบ หรือกำลังอัด/ถอดเสียง | ดูบรรทัดสถานะใต้ช่อง — บอกเหตุผลเป็นไทยทุกครั้ง |
@@ -45,6 +55,7 @@ python3 start-thai.py --no-browser
 ## ไฟล์หลักฐาน/เอกสาร
 - `docs/CHAT_ONLY_SCOPE.md` — ขอบเขตและตัวกันเครื่องมือ (instance-local fail-closed gate)
 - `docs/PHASE4_RESILIENCE.md` — ผลทดสอบความทนทาน/ความปลอดภัย 8 รายการ
+- `docs/POST_V1_OPTIN_TH.md` — ฟีเจอร์เสริม opt-in 4 ตัว (LAN/autostart/ชั้น B/wake word)
 - `docs/THAI_VOICE_SETUP.md`, `docs/ROLLBACK.md` — ติดตั้ง/ย้อนกลับ
 - `/Volumes/Data_Sufayan/JARVIS_Thai_Voice/verification/quality/suite_benchmark_report.md` — ผล 30 วลี
 - `/Volumes/Data_Sufayan/JARVIS_Thai_Voice/verification/dashboard/PILOT_STATUS.md` — สถานะรวม/การยอมรับจากผู้ใช้
